@@ -15,7 +15,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     let resp = Router::new()
         .get("/", |_, _| Response::from_html(home_page()))
-        .get("/whoami", |_, _| Response::from_html(layout("whoami", "whoami", "", WHOAMI)))
+        .get("/whoami", |_, _| Response::from_html(layout("whoami", "whoami", SITE_DESC, "/whoami", "", WHOAMI)))
         .get("/blog", |_, _| Response::from_html(blog_index()))
         .get_async("/blog/:slug", |_, ctx| async move {
             let slug = match ctx.param("slug") {
@@ -30,8 +30,8 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 None => Response::error("Post not found", 404),
             }
         })
-        .get("/projects", |_, _| Response::from_html(layout("projects", "projects", "", PROJECTS)))
-        .get("/uses", |_, _| Response::from_html(layout("uses", "uses", "", USES)))
+        .get("/projects", |_, _| Response::from_html(layout("projects", "projects", "Things I've built and broken.", "/projects", "", PROJECTS)))
+        .get("/uses", |_, _| Response::from_html(layout("uses", "uses", "The gear and setup behind my homelab.", "/uses", "", USES)))
         .get_async("/guestbook", |_, ctx| async move {
             let entries = list_guestbook(&ctx.env).await.unwrap_or_default();
             Response::from_html(guestbook_page(&entries))
@@ -54,6 +54,16 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             r.headers_mut().set("content-type", "application/rss+xml; charset=utf-8")?;
             Ok(r)
         })
+        .get("/sitemap.xml", |_, _| {
+            let mut r = Response::ok(sitemap())?;
+            r.headers_mut().set("content-type", "application/xml; charset=utf-8")?;
+            Ok(r)
+        })
+        .get("/robots.txt", |_, _| {
+            let mut r = Response::ok("User-agent: *\nAllow: /\nSitemap: https://lunaric.dev/sitemap.xml\n")?;
+            r.headers_mut().set("content-type", "text/plain; charset=utf-8")?;
+            Ok(r)
+        })
         .get_async("/api/ping", |_, _| async move {
             let body = r#"{"status":"ok","host":"lunaric.dev","runtime":"rust+wasm @ cloudflare edge"}"#;
             let mut resp = Response::ok(body)?;
@@ -70,9 +80,9 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 // Sources allowed: own origin, Google Fonts (CSS + font files), and cdnjs for
 // highlight.js (script + theme). No inline scripts/styles → no 'unsafe-inline'.
 const CSP: &str = "default-src 'self'; \
-    script-src 'self' https://cdnjs.cloudflare.com; \
-    style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; \
-    font-src https://fonts.gstatic.com; \
+    script-src 'self'; \
+    style-src 'self'; \
+    font-src 'self'; \
     img-src 'self' data: https:; \
     connect-src 'self'; \
     base-uri 'none'; \
@@ -240,6 +250,10 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+fn att(s: &str) -> String {
+    esc(s).replace('"', "&quot;")
+}
+
 fn short_date(d: &str) -> String {
     let p: Vec<&str> = d.split('-').collect();
     if p.len() == 3 {
@@ -281,7 +295,7 @@ fn home_page() -> String {
         format!("<ul class=\"posts\">{}</ul>", posts.iter().take(3).map(post_row).collect::<String>())
     };
     let inner = format!("{HOME_TOP}\n<h2>// latest</h2>\n{latest}");
-    layout("~", "whoami", "", &inner)
+    layout("~", "whoami", SITE_DESC, "/", "", &inner)
 }
 
 fn blog_index() -> String {
@@ -294,12 +308,7 @@ fn blog_index() -> String {
     let inner = format!(
         "<h1>// blog</h1>\n<p class=\"lead\">Notes, writeups, and the occasional deep dive.</p>\n{list}"
     );
-    layout(
-        "blog",
-        "blog",
-        "<link rel=\"alternate\" type=\"application/rss+xml\" title=\"lunaric.dev\" href=\"/rss.xml\">",
-        &inner,
-    )
+    layout("blog", "blog", "Security writeups, projects, and homelab notes.", "/blog", "", &inner)
 }
 
 fn post_page(p: &Post, views: i64) -> String {
@@ -315,8 +324,9 @@ fn post_page(p: &Post, views: i64) -> String {
         tags = tags_html(&p.tags),
         body = render_md(&p.body),
     );
-    let head = "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css\"><script defer src=\"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js\"></script>";
-    layout("blog", &p.title, head, &inner)
+    let head = "<link rel=\"stylesheet\" href=\"/hljs-github-dark.css\"><script defer src=\"/hljs.min.js\"></script>";
+    let desc = if p.description.is_empty() { SITE_DESC } else { p.description.as_str() };
+    layout("blog", &p.title, desc, &format!("/blog/{}", p.slug), head, &inner)
 }
 
 fn guestbook_page(entries: &[Entry]) -> String {
@@ -350,7 +360,7 @@ fn guestbook_page(entries: &[Entry]) -> String {
 </form>
 {list}"#
     );
-    layout("guestbook", "guestbook", "", &inner)
+    layout("guestbook", "guestbook", "Sign the guestbook — say hi.", "/guestbook", "", &inner)
 }
 
 fn rss() -> String {
@@ -376,6 +386,28 @@ fn rss() -> String {
     )
 }
 
+fn sitemap() -> String {
+    let mut urls = vec![
+        "".to_string(),
+        "/whoami".into(),
+        "/blog".into(),
+        "/projects".into(),
+        "/uses".into(),
+        "/guestbook".into(),
+    ];
+    for p in all_posts() {
+        urls.push(format!("/blog/{}", p.slug));
+    }
+    let body = urls
+        .iter()
+        .map(|u| format!("<url><loc>https://lunaric.dev{u}</loc></url>"))
+        .collect::<String>();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">{body}</urlset>"
+    )
+}
+
 // ---------- layout ----------
 
 fn nav(active: &str) -> String {
@@ -394,18 +426,29 @@ fn nav(active: &str) -> String {
     .collect::<String>()
 }
 
-fn layout(active: &str, title: &str, head_extra: &str, inner: &str) -> String {
+fn layout(active: &str, title: &str, desc: &str, path: &str, head_extra: &str, inner: &str) -> String {
+    let page_title = att(&format!("{title} · lunaric.dev"));
+    let desc = att(desc);
     format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} · lunaric.dev</title>
-<meta name="description" content="lunaric — security learner, bug bounty hunter, homelab tinkerer.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<title>{pt}</title>
+<meta name="description" content="{desc}">
+<link rel="canonical" href="https://lunaric.dev{path}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lunaric.dev">
+<meta property="og:title" content="{pt}">
+<meta property="og:description" content="{desc}">
+<meta property="og:url" content="https://lunaric.dev{path}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:creator" content="@11lunaric11">
+<meta name="twitter:title" content="{pt}">
+<meta name="twitter:description" content="{desc}">
+<link rel="alternate" type="application/rss+xml" title="lunaric.dev" href="/rss.xml">
+<link rel="stylesheet" href="/fonts.css">
 <link rel="stylesheet" href="/styles.css">
 {head_extra}
 </head>
@@ -425,11 +468,16 @@ fn layout(active: &str, title: &str, head_extra: &str, inner: &str) -> String {
 <script defer src="/term.js"></script>
 </body>
 </html>"#,
-        nav = nav(active)
+        pt = page_title,
+        desc = desc,
+        nav = nav(active),
     )
 }
 
 // ---------- static page content ----------
+
+const SITE_DESC: &str =
+    "Dejan (lunaric) — offensive security learner, bug bounty hunter, homelab tinkerer.";
 
 const HOME_TOP: &str = r#"<h1>whoami <span class="accent">// lunaric</span></h1>
 <p class="lead">Dejan — aka lunaric. Offensive security learner, bug bounty hunter, homelab tinkerer.</p>
