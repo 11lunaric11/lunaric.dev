@@ -4,6 +4,9 @@
 # worker-build output
 /build
 
+# generated Open Graph images (rebuilt by build.rs)
+/assets/og/
+
 # wrangler / node
 node_modules/
 .wrangler/

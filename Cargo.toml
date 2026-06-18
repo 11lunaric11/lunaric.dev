@@ -17,3 +17,8 @@ comrak = { version = "0.52.0", default-features = false }
 console_error_panic_hook = "0.1.7"
 serde = { version = "1.0.228", features = ["derive"] }
 worker = { version = "0.8.5", features = ["d1"] }
+
+# build-time only: generate per-post Open Graph PNG cards
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2"

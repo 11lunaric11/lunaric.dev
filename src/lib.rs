@@ -70,6 +70,17 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             resp.headers_mut().set("content-type", "application/json")?;
             Ok(resp)
         })
+        .post_async("/api/hit", |mut req, ctx| async move {
+            let path = req.text().await.unwrap_or_default();
+            if valid_path(&path) {
+                let _ = record_hit(&ctx.env, &path).await;
+            }
+            Response::ok("")
+        })
+        .get_async("/stats", |_, ctx| async move {
+            let rows = list_hits(&ctx.env).await.unwrap_or_default();
+            Response::from_html(stats_page(&rows))
+        })
         .run(req, env)
         .await?;
     let resp = if resp.status_code() == 404 { not_found() } else { resp };
@@ -160,6 +171,41 @@ async fn add_guestbook(env: &Env, name: &str, message: &str) -> Result<()> {
         .run()
         .await?;
     Ok(())
+}
+
+async fn record_hit(env: &Env, path: &str) -> Result<()> {
+    let db = env.d1("DB")?;
+    db.prepare("INSERT INTO hits (path, count) VALUES (?1, 1) ON CONFLICT(path) DO UPDATE SET count = count + 1")
+        .bind(&[JsValue::from(path)])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+#[derive(Deserialize, Default)]
+struct Hit {
+    path: String,
+    count: i64,
+}
+
+async fn list_hits(env: &Env) -> Result<Vec<Hit>> {
+    let db = env.d1("DB")?;
+    db.prepare("SELECT path, count FROM hits ORDER BY count DESC")
+        .all()
+        .await?
+        .results::<Hit>()
+}
+
+// only count known routes — stops the hits table from being spammed with junk paths
+fn valid_path(p: &str) -> bool {
+    const KNOWN: [&str; 7] = ["/", "/whoami", "/blog", "/projects", "/uses", "/guestbook", "/stats"];
+    if KNOWN.contains(&p) {
+        return true;
+    }
+    if let Some(slug) = p.strip_prefix("/blog/") {
+        return !slug.is_empty() && RAW_POSTS.iter().any(|(s, _)| *s == slug);
+    }
+    false
 }
 
 fn field(form: &FormData, key: &str) -> String {
@@ -375,6 +421,29 @@ fn guestbook_page(entries: &[Entry]) -> String {
     layout("guestbook", "guestbook", "Sign the guestbook — say hi.", "/guestbook", "", &inner)
 }
 
+fn stats_page(rows: &[Hit]) -> String {
+    let total: i64 = rows.iter().map(|h| h.count).sum();
+    let list = if rows.is_empty() {
+        "<p class=\"out\">No views recorded yet.</p>".to_string()
+    } else {
+        let items = rows
+            .iter()
+            .map(|h| {
+                format!(
+                    "<li><span class=\"date\">{count}</span><a href=\"{p}\">{p}</a></li>",
+                    count = h.count,
+                    p = esc(&h.path),
+                )
+            })
+            .collect::<String>();
+        format!("<ul class=\"posts\">{items}</ul>")
+    };
+    let inner = format!(
+        "<h1>// stats</h1>\n<p class=\"lead\">{total} page views · self-hosted on D1, no third-party trackers.</p>\n{list}"
+    );
+    layout("", "stats", "Site analytics — self-hosted, privacy-first.", "/stats", "", &inner)
+}
+
 fn rss() -> String {
     let items = all_posts()
         .iter()
@@ -441,6 +510,10 @@ fn nav(active: &str) -> String {
 fn layout(active: &str, title: &str, desc: &str, path: &str, head_extra: &str, inner: &str) -> String {
     let page_title = att(&format!("{title} · lunaric.dev"));
     let desc = att(desc);
+    let og_image = match path.strip_prefix("/blog/") {
+        Some(slug) if !slug.is_empty() => format!("https://lunaric.dev/og/{slug}.png"),
+        _ => "https://lunaric.dev/og/default.png".to_string(),
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -455,10 +528,12 @@ fn layout(active: &str, title: &str, desc: &str, path: &str, head_extra: &str, i
 <meta property="og:title" content="{pt}">
 <meta property="og:description" content="{desc}">
 <meta property="og:url" content="https://lunaric.dev{path}">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="{og_image}">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:creator" content="@11lunaric11">
 <meta name="twitter:title" content="{pt}">
 <meta name="twitter:description" content="{desc}">
+<meta name="twitter:image" content="{og_image}">
 <link rel="alternate" type="application/rss+xml" title="lunaric.dev" href="/rss.xml">
 <script src="/theme.js"></script>
 <link rel="stylesheet" href="/fonts.css">
@@ -474,6 +549,7 @@ fn layout(active: &str, title: &str, desc: &str, path: &str, head_extra: &str, i
 <footer>
 <span>© 2026 Dejan · built in rust</span>
 <a href="/rss.xml">rss</a>
+<a href="/stats">stats</a>
 <a href="https://github.com/11lunaric11">github</a>
 <span class="spacer"><span id="clock">--:--:--</span></span>
 </footer>

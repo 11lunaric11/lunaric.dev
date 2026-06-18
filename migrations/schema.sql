@@ -11,3 +11,9 @@ CREATE TABLE IF NOT EXISTS guestbook (
   message TEXT NOT NULL,
   created TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- self-hosted page-view analytics (client beacon -> /api/hit)
+CREATE TABLE IF NOT EXISTS hits (
+  path  TEXT PRIMARY KEY,
+  count INTEGER NOT NULL DEFAULT 0
+);

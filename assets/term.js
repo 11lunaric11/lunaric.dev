@@ -241,3 +241,12 @@
 (function () {
   if (window.hljs) { try { window.hljs.highlightAll(); } catch (e) {} }
 })();
+
+// self-hosted analytics beacon — count this page view (no cookies, no third party)
+(function () {
+  try {
+    var p = location.pathname;
+    if (navigator.sendBeacon) navigator.sendBeacon("/api/hit", p);
+    else fetch("/api/hit", { method: "POST", body: p, keepalive: true });
+  } catch (e) {}
+})();
