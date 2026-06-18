@@ -19,3 +19,9 @@ command = "worker-build --release --no-panic-recovery"
 [assets]
 directory = "./assets"
 binding = "ASSETS"
+
+# D1 (SQLite at the edge) — view counters + guestbook.
+[[d1_databases]]
+binding = "DB"
+database_name = "lunaric-dev"
+database_id = "cf5f6ccb-ff1b-43c0-abc0-3f6c319c2bb3"

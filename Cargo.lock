@@ -346,6 +346,7 @@ version = "0.1.0"
 dependencies = [
  "comrak",
  "console_error_panic_hook",
+ "serde",
  "worker",
 ]
 
