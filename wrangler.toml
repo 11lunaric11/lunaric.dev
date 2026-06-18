@@ -20,8 +20,12 @@ command = "worker-build --release --no-panic-recovery"
 directory = "./assets"
 binding = "ASSETS"
 
-# D1 (SQLite at the edge) — view counters + guestbook.
+# D1 (SQLite at the edge) — view counters, guestbook, request log.
 [[d1_databases]]
 binding = "DB"
 database_name = "lunaric-dev"
 database_id = "cf5f6ccb-ff1b-43c0-abc0-3f6c319c2bb3"
+
+# daily prune of the request log (keeps the last ~5000 rows)
+[triggers]
+crons = ["0 4 * * *"]

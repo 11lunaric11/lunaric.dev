@@ -17,3 +17,16 @@ CREATE TABLE IF NOT EXISTS hits (
   path  TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0
 );
+
+-- request monitor (private /dashboard, gated by Cloudflare Access)
+CREATE TABLE IF NOT EXISTS requests (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts      TEXT NOT NULL DEFAULT (datetime('now')),
+  method  TEXT,
+  path    TEXT,
+  status  INTEGER,
+  country TEXT,
+  ip      TEXT,
+  ua      TEXT,
+  threat  TEXT
+);

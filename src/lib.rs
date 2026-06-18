@@ -10,8 +10,16 @@ use worker::*;
 include!(concat!(env!("OUT_DIR"), "/posts_generated.rs"));
 
 #[event(fetch)]
-async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
+
+    // capture request metadata before the router consumes `req`
+    let method = req.inner().method();
+    let path = req.path();
+    let ua = req.headers().get("user-agent").ok().flatten().unwrap_or_default();
+    let ip = req.headers().get("cf-connecting-ip").ok().flatten().unwrap_or_default();
+    let country = req.headers().get("cf-ipcountry").ok().flatten().unwrap_or_default();
+    let log_db = env.d1("DB").ok();
 
     let resp = Router::new()
         .get("/", |_, _| Response::from_html(home_page()))
@@ -81,10 +89,41 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let rows = list_hits(&ctx.env).await.unwrap_or_default();
             Response::from_html(stats_page(&rows))
         })
+        .get_async("/dashboard", |req, ctx| async move {
+            // Cloudflare Access injects this header only for authenticated users.
+            match req.headers().get("cf-access-authenticated-user-email").ok().flatten() {
+                Some(email) => {
+                    let data = dashboard_data(&ctx.env).await.unwrap_or_default();
+                    Response::from_html(dashboard_page(&data, &email))
+                }
+                None => Response::error("403 — this page is protected by Cloudflare Access", 403),
+            }
+        })
         .run(req, env)
         .await?;
     let resp = if resp.status_code() == 404 { not_found() } else { resp };
+
+    // log the request in the background (doesn't delay the response)
+    if let Some(db) = log_db {
+        if should_log(&path) {
+            let status = resp.status_code();
+            let threat = threat_tag(&path);
+            ctx.wait_until(async move {
+                let _ = log_request(&db, &method, &path, status, &country, &ip, &ua, threat).await;
+            });
+        }
+    }
     Ok(secure(resp))
+}
+
+#[event(scheduled)]
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    if let Ok(db) = env.d1("DB") {
+        let _ = db
+            .prepare("DELETE FROM requests WHERE id <= (SELECT MAX(id) FROM requests) - 5000")
+            .run()
+            .await;
+    }
 }
 
 fn not_found() -> Response {
@@ -206,6 +245,89 @@ fn valid_path(p: &str) -> bool {
         return !slug.is_empty() && RAW_POSTS.iter().any(|(s, _)| *s == slug);
     }
     false
+}
+
+// ---------- request monitor (private /dashboard) ----------
+
+fn should_log(p: &str) -> bool {
+    !(p == "/api/hit" || p == "/api/ping" || p.starts_with("/dashboard"))
+}
+
+// flag common attack-probe paths so they stand out in the log
+fn threat_tag(path: &str) -> Option<String> {
+    let p = path.to_lowercase();
+    const SUS: [&str; 18] = [
+        "wp-login", "wp-admin", "xmlrpc", "/.env", "/.git", "phpmyadmin", "/.aws",
+        "/.ssh", "/etc/passwd", "/server-status", "/actuator", "/cgi-bin",
+        "union select", "<script", "../", "%2e%2e", "/vendor/", "/.vscode",
+    ];
+    SUS.iter().find(|s| p.contains(*s)).map(|s| s.to_string())
+}
+
+async fn log_request(
+    db: &D1Database, method: &str, path: &str, status: u16,
+    country: &str, ip: &str, ua: &str, threat: Option<String>,
+) -> Result<()> {
+    let threat_val = match &threat {
+        Some(t) => JsValue::from(t.clone()),
+        None => JsValue::NULL,
+    };
+    db.prepare("INSERT INTO requests (method,path,status,country,ip,ua,threat) VALUES (?1,?2,?3,?4,?5,?6,?7)")
+        .bind(&[
+            JsValue::from(method),
+            JsValue::from(clamp(path, 256)),
+            JsValue::from_f64(status as f64),
+            JsValue::from(country),
+            JsValue::from(ip),
+            JsValue::from(clamp(ua, 180)),
+            threat_val,
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+#[derive(Deserialize, Default)]
+struct ReqRow {
+    method: String,
+    path: String,
+    status: i64,
+    country: String,
+    ip: String,
+    ua: String,
+    threat: Option<String>,
+    ts: String,
+}
+
+#[derive(Deserialize, Default)]
+struct KC {
+    k: String,
+    c: i64,
+}
+
+#[derive(Default)]
+struct Dash {
+    recent: Vec<ReqRow>,
+    total: i64,
+    flagged: i64,
+    ips: i64,
+    day: i64,
+    top_paths: Vec<KC>,
+    top_countries: Vec<KC>,
+}
+
+async fn dashboard_data(env: &Env) -> Result<Dash> {
+    let db = env.d1("DB")?;
+    let recent = db
+        .prepare("SELECT method,path,status,country,ip,ua,threat,ts FROM requests ORDER BY id DESC LIMIT 50")
+        .all().await?.results::<ReqRow>()?;
+    let total = db.prepare("SELECT COUNT(*) c FROM requests").first::<i64>(Some("c")).await?.unwrap_or(0);
+    let flagged = db.prepare("SELECT COUNT(*) c FROM requests WHERE threat IS NOT NULL").first::<i64>(Some("c")).await?.unwrap_or(0);
+    let ips = db.prepare("SELECT COUNT(DISTINCT ip) c FROM requests").first::<i64>(Some("c")).await?.unwrap_or(0);
+    let day = db.prepare("SELECT COUNT(*) c FROM requests WHERE ts >= datetime('now','-1 day')").first::<i64>(Some("c")).await?.unwrap_or(0);
+    let top_paths = db.prepare("SELECT path k, COUNT(*) c FROM requests GROUP BY path ORDER BY c DESC LIMIT 8").all().await?.results::<KC>()?;
+    let top_countries = db.prepare("SELECT country k, COUNT(*) c FROM requests GROUP BY country ORDER BY c DESC LIMIT 8").all().await?.results::<KC>()?;
+    Ok(Dash { recent, total, flagged, ips, day, top_paths, top_countries })
 }
 
 fn field(form: &FormData, key: &str) -> String {
@@ -442,6 +564,58 @@ fn stats_page(rows: &[Hit]) -> String {
         "<h1>// stats</h1>\n<p class=\"lead\">{total} page views · self-hosted on D1, no third-party trackers.</p>\n{list}"
     );
     layout("", "stats", "Site analytics — self-hosted, privacy-first.", "/stats", "", &inner)
+}
+
+fn dashboard_page(d: &Dash, email: &str) -> String {
+    let stat = |label: &str, val: i64| {
+        format!("<div class=\"stat\"><span class=\"stat-n\">{val}</span><span class=\"stat-l\">{label}</span></div>")
+    };
+    let stats = format!(
+        "<div class=\"stats\">{}{}{}{}</div>",
+        stat("total requests", d.total),
+        stat("last 24h", d.day),
+        stat("unique IPs", d.ips),
+        stat("flagged", d.flagged),
+    );
+
+    let rows = if d.recent.is_empty() {
+        "<tr><td colspan=\"5\" class=\"out\">No requests logged yet.</td></tr>".to_string()
+    } else {
+        d.recent
+            .iter()
+            .map(|r| {
+                let cls = if r.threat.is_some() { " class=\"sus\"" } else { "" };
+                let badge = r
+                    .threat
+                    .as_deref()
+                    .map(|t| format!(" <span class=\"badge\">{}</span>", esc(t)))
+                    .unwrap_or_default();
+                format!(
+                    "<tr{cls}><td>{ts}</td><td>{m}</td><td>{st}</td><td>{cc}</td><td class=\"p\">{path}{badge}</td></tr>",
+                    ts = esc(&r.ts), m = esc(&r.method), st = r.status, cc = esc(&r.country), path = esc(&r.path),
+                )
+            })
+            .collect::<String>()
+    };
+    let table = format!(
+        "<table class=\"req\"><thead><tr><th>time (UTC)</th><th>method</th><th>status</th><th>cc</th><th>path</th></tr></thead><tbody>{rows}</tbody></table>"
+    );
+
+    let list = |title: &str, items: &[KC]| {
+        let body = items
+            .iter()
+            .map(|k| format!("<li><span class=\"date\">{}</span><span>{}</span></li>", k.c, esc(&k.k)))
+            .collect::<String>();
+        format!("<h2>// {title}</h2>\n<ul class=\"posts\">{body}</ul>")
+    };
+
+    let inner = format!(
+        "<h1>// request monitor</h1>\n<p class=\"lead\">Signed in as {email}. Live request log for lunaric.dev.</p>\n{stats}\n<h2>// recent requests</h2>\n{table}\n{tp}\n{tc}",
+        email = esc(email),
+        tp = list("top paths", &d.top_paths),
+        tc = list("top countries", &d.top_countries),
+    );
+    layout("", "request monitor", "Private request monitor.", "/dashboard", "", &inner)
 }
 
 fn rss() -> String {
