@@ -1,0 +1,14 @@
+# rust
+/target
+
+# worker-build output
+/build
+
+# wrangler / node
+node_modules/
+.wrangler/
+.dev.vars
+.env
+
+# misc
+.DS_Store

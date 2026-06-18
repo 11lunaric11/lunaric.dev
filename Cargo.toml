@@ -1,0 +1,18 @@
+[package]
+name = "lunaric-dev"
+version = "0.1.0"
+edition = "2021"
+authors = ["lunaric"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+[dependencies]
+comrak = { version = "0.52.0", default-features = false }
+console_error_panic_hook = "0.1.7"
+worker = "0.8.5"

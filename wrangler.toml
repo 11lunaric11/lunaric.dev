@@ -1,0 +1,21 @@
+name = "lunaric-dev"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-06-18"
+
+# Serve directly on the custom domain (auto-creates DNS + managed TLS cert).
+routes = [
+  { pattern = "lunaric.dev", custom_domain = true },
+  { pattern = "www.lunaric.dev", custom_domain = true },
+]
+
+# Build the Rust Worker to WebAssembly.
+# --no-panic-recovery avoids wasm-bindgen's externref catch-wrappers, which are
+# broken under Rust >=1.82 + wasm-bindgen 0.2.125 ("externref table required").
+[build]
+command = "worker-build --release --no-panic-recovery"
+
+# Static assets (CSS, JS, images) served directly from Cloudflare's edge.
+# The Worker handles every route that isn't a matching static file.
+[assets]
+directory = "./assets"
+binding = "ASSETS"

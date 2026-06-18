@@ -1,0 +1,6 @@
+# Rust >=1.82 enables `reference-types` by default for wasm32-unknown-unknown.
+# That breaks wasm-bindgen 0.2.x's catch-wrapper generation under worker-build
+# ("externref table required for catch wrappers"). Disabling it makes
+# wasm-bindgen fall back to its own externref-table injection, which works.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=-reference-types"]
