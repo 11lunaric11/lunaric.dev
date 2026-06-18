@@ -72,7 +72,19 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .run(req, env)
         .await?;
+    let resp = if resp.status_code() == 404 { not_found() } else { resp };
     Ok(secure(resp))
+}
+
+fn not_found() -> Response {
+    let inner = r#"<h1>404 <span class="accent">// not found</span></h1>
+<p class="lead">This path doesn't exist — or you don't have clearance.</p>
+<p>Head back to <a href="/">~</a>, or try <a href="/blog">/blog</a> and <a href="/whoami">/whoami</a>.</p>"#;
+    let html = layout("", "404", "Page not found.", "/404", "", inner);
+    match Response::from_html(html) {
+        Ok(r) => r.with_status(404),
+        Err(_) => Response::error("Not found", 404).unwrap(),
+    }
 }
 
 // ---------- security headers ----------
@@ -448,6 +460,7 @@ fn layout(active: &str, title: &str, desc: &str, path: &str, head_extra: &str, i
 <meta name="twitter:title" content="{pt}">
 <meta name="twitter:description" content="{desc}">
 <link rel="alternate" type="application/rss+xml" title="lunaric.dev" href="/rss.xml">
+<script src="/theme.js"></script>
 <link rel="stylesheet" href="/fonts.css">
 <link rel="stylesheet" href="/styles.css">
 {head_extra}
@@ -462,7 +475,7 @@ fn layout(active: &str, title: &str, desc: &str, path: &str, head_extra: &str, i
 <span>© 2026 Dejan · built in rust</span>
 <a href="/rss.xml">rss</a>
 <a href="https://github.com/11lunaric11">github</a>
-<span class="spacer">Berlin <span id="clock">--:--:--</span></span>
+<span class="spacer"><span id="clock">--:--:--</span></span>
 </footer>
 </div>
 <script defer src="/term.js"></script>

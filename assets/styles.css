@@ -17,6 +17,13 @@
   --maxw: 680px;
 }
 
+/* accent themes (all dark; swap the teal accent) */
+:root[data-theme="blue"]    { --teal: #4c8dff; --teal-dim: #2f6fe0; }
+:root[data-theme="purple"]  { --teal: #a78bfa; --teal-dim: #7c5cf0; }
+:root[data-theme="amber"]   { --teal: #f0a830; --teal-dim: #c9851a; }
+:root[data-theme="crimson"] { --teal: #f0556e; --teal-dim: #d83a55; }
+:root[data-theme="green"]   { --teal: #3ddc84; --teal-dim: #27b566; }
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 
