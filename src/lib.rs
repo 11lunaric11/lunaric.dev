@@ -13,7 +13,7 @@ include!(concat!(env!("OUT_DIR"), "/posts_generated.rs"));
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
-    Router::new()
+    let resp = Router::new()
         .get("/", |_, _| Response::from_html(home_page()))
         .get("/whoami", |_, _| Response::from_html(layout("whoami", "whoami", "", WHOAMI)))
         .get("/blog", |_, _| Response::from_html(blog_index()))
@@ -38,6 +38,10 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .post_async("/guestbook", |mut req, ctx| async move {
             let form = req.form_data().await?;
+            // honeypot: real users never fill this hidden field; bots do.
+            if !field(&form, "website").trim().is_empty() {
+                return redirect_to("/guestbook");
+            }
             let name = field(&form, "name");
             let message = field(&form, "message");
             if !message.trim().is_empty() {
@@ -57,7 +61,39 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             Ok(resp)
         })
         .run(req, env)
-        .await
+        .await?;
+    Ok(secure(resp))
+}
+
+// ---------- security headers ----------
+
+// Sources allowed: own origin, Google Fonts (CSS + font files), and cdnjs for
+// highlight.js (script + theme). No inline scripts/styles → no 'unsafe-inline'.
+const CSP: &str = "default-src 'self'; \
+    script-src 'self' https://cdnjs.cloudflare.com; \
+    style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; \
+    font-src https://fonts.gstatic.com; \
+    img-src 'self' data: https:; \
+    connect-src 'self'; \
+    base-uri 'none'; \
+    form-action 'self'; \
+    frame-ancestors 'none'; \
+    object-src 'none'; \
+    upgrade-insecure-requests";
+
+fn secure(mut resp: Response) -> Response {
+    let h = resp.headers_mut();
+    let _ = h.set("Content-Security-Policy", CSP);
+    let _ = h.set("X-Content-Type-Options", "nosniff");
+    let _ = h.set("X-Frame-Options", "DENY");
+    let _ = h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    let _ = h.set(
+        "Permissions-Policy",
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), interest-cohort=()",
+    );
+    let _ = h.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+    let _ = h.set("Cross-Origin-Opener-Policy", "same-origin");
+    resp
 }
 
 // ---------- D1: view counter + guestbook ----------
@@ -279,7 +315,7 @@ fn post_page(p: &Post, views: i64) -> String {
         tags = tags_html(&p.tags),
         body = render_md(&p.body),
     );
-    let head = "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css\"><script defer src=\"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js\" onload=\"hljs.highlightAll()\"></script>";
+    let head = "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css\"><script defer src=\"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js\"></script>";
     layout("blog", &p.title, head, &inner)
 }
 
@@ -308,6 +344,7 @@ fn guestbook_page(entries: &[Entry]) -> String {
 <p class="lead">Leave a mark. Be nice.</p>
 <form class="gb-form" method="post" action="/guestbook">
   <input class="gb-input" type="text" name="name" maxlength="50" placeholder="name (optional)" autocomplete="off">
+  <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
   <textarea class="gb-input" name="message" maxlength="1000" rows="3" placeholder="message…" required></textarea>
   <button class="gb-btn" type="submit">sign</button>
 </form>
@@ -385,7 +422,7 @@ fn layout(active: &str, title: &str, head_extra: &str, inner: &str) -> String {
 <span class="spacer">Berlin <span id="clock">--:--:--</span></span>
 </footer>
 </div>
-<script src="/term.js"></script>
+<script defer src="/term.js"></script>
 </body>
 </html>"#,
         nav = nav(active)

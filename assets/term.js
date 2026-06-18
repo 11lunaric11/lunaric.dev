@@ -80,3 +80,11 @@
   tick();
   setInterval(tick, 1000);
 })();
+
+// syntax highlighting on post pages (term.js is deferred, so highlight.js —
+// also deferred and earlier in the document — has already loaded by now)
+(function () {
+  if (window.hljs) {
+    try { window.hljs.highlightAll(); } catch (e) {}
+  }
+})();
