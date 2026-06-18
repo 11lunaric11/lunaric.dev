@@ -7,6 +7,9 @@
 # generated Open Graph images (rebuilt by build.rs)
 /assets/og/
 
+# full-res source photo (only the pixelated assets/redo-sprite.png is published)
+/Redo.png
+
 # wrangler / node
 node_modules/
 .wrangler/

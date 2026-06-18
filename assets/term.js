@@ -4,6 +4,8 @@
   const input = document.getElementById("term-input");
   if (!body || !input) return;
 
+  let gameOn = false;
+
   // ---------- fake filesystem ----------
   const F = (c) => ({ type: "file", content: c });
   const D = (children) => ({ type: "dir", children });
@@ -83,6 +85,7 @@
       "  contact       email me\n" +
       "  blog / uses / projects   jump to a page\n" +
       "  clear         clear the screen\n" +
+      "  runaway       🏃 …you'll see\n" +
       "(tip: ↑/↓ for history, Tab to complete)",
     whoami: () => "lunaric — security learner. PT1 ✓ · CJCA (wip). builds things on the edge.",
     ff: () => FF,
@@ -126,6 +129,9 @@
     },
     contact: () => { location.href = "mailto:contact@lunaric.dev"; return "opening mail → contact@lunaric.dev"; },
     sudo: () => "lunaric is not in the sudoers file. This incident will be reported. 🚨",
+    runaway: () => { startGame(); },
+    run: () => { startGame(); },
+    redo: () => { startGame(); },
     blog: () => { location.href = "/blog"; return "→ /blog"; },
     uses: () => { location.href = "/uses"; return "→ /uses"; },
     projects: () => { location.href = "/projects"; return "→ /projects"; },
@@ -199,6 +205,7 @@
   }
 
   input.addEventListener("keydown", (e) => {
+    if (gameOn) return;
     if (e.key === "Enter") {
       const v = input.value;
       run(v);
@@ -219,6 +226,75 @@
   });
 
   document.querySelector(".term")?.addEventListener("click", () => input.focus());
+
+  // ---------- easter egg: run away from Redo ----------
+  function startGame() {
+    if (gameOn) return;
+    gameOn = true;
+    input.blur();
+    const inputLine = document.getElementById("term-input-line");
+    if (inputLine) inputLine.style.display = "none";
+
+    const wrap = document.createElement("div");
+    wrap.className = "line rg-wrap";
+    wrap.innerHTML =
+      '<div class="rg-arena">' +
+        '<div class="rg-hud">RUNAWAY — tap SPACE to run · Q to quit</div>' +
+        '<div class="rg-msg"></div>' +
+        '<div class="rg-ground"></div>' +
+        '<div class="rg-finish">🏁</div>' +
+        '<img class="rg-redo" src="/redo-sprite.png" alt="Redo">' +
+        '<div class="rg-runner">🏃</div>' +
+      '</div>';
+    body.insertBefore(wrap, body.lastElementChild);
+
+    const arena = wrap.querySelector(".rg-arena");
+    const redoEl = wrap.querySelector(".rg-redo");
+    const runEl = wrap.querySelector(".rg-runner");
+    const msgEl = wrap.querySelector(".rg-msg");
+
+    const N = 100;
+    let pos = 18, redo = 0, tick = 0, alive = true, iv = null;
+    const taunts = ["catch you! 😈", "too slow 🐌", "redo time 🔁", "nowhere to run 👹", "gotcha 💨", "mmm spaghetti 🍝"];
+
+    function place() {
+      runEl.style.left = (2 + (pos / N) * 86) + "%";
+      redoEl.style.left = (2 + (redo / N) * 86) + "%";
+    }
+    function stop(win) {
+      if (!alive) return;
+      alive = false;
+      gameOn = false;
+      if (iv) clearInterval(iv);
+      document.removeEventListener("keydown", onKey, true);
+      if (inputLine) inputLine.style.display = "";
+      arena.classList.add(win ? "rg-win" : "rg-lose");
+      msgEl.textContent = win ? "🏁 you escaped Redo! gg" : "💀 Redo got you — 'runaway' to retry";
+      input.focus();
+    }
+    function onKey(e) {
+      if (!alive) return;
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        pos += 2;
+        if (pos >= N) { place(); stop(true); } else { place(); }
+      } else if (e.key === "q" || e.key === "Q" || e.key === "Escape") {
+        e.preventDefault();
+        stop(false);
+      }
+    }
+    document.addEventListener("keydown", onKey, true);
+    place();
+    iv = setInterval(function () {
+      if (!alive) return;
+      tick++;
+      redo += (tick % 7 === 0) ? 3 : 2;
+      if (redo >= pos) { redo = pos; place(); stop(false); return; }
+      place();
+      if (tick % 5 === 0) msgEl.textContent = taunts[tick % taunts.length];
+      else if (tick % 5 === 2) msgEl.textContent = "";
+    }, 170);
+  }
 })();
 
 // live clock (Berlin) in the footer
