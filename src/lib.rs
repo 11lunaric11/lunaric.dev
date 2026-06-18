@@ -74,6 +74,10 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             if !field(&form, "website").trim().is_empty() {
                 return redirect_to("/guestbook");
             }
+            // Turnstile bot check (silently drop on failure)
+            if !verify_turnstile(&ctx.env, &field(&form, "cf-turnstile-response"), &ip).await {
+                return redirect_to("/guestbook");
+            }
             let name = field(&form, "name");
             let message = field(&form, "message");
             if !message.trim().is_empty() {
@@ -165,6 +169,43 @@ async fn rl_allow(db: &D1Database, key: &str, limit: i64, period: i64) -> bool {
     count.map(|c| c <= limit).unwrap_or(true)
 }
 
+#[derive(Deserialize)]
+struct TsVerify {
+    success: bool,
+}
+
+// Verify a Cloudflare Turnstile token server-side. Fails CLOSED on a missing/invalid
+// token (the bot case) but OPEN on infrastructure errors so an outage can't break the form.
+async fn verify_turnstile(env: &Env, token: &str, ip: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let secret = match env.secret("TURNSTILE_SECRET") {
+        Ok(s) => s.to_string(),
+        Err(_) => return true,
+    };
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let body = format!(
+        "{{\"secret\":\"{}\",\"response\":\"{}\",\"remoteip\":\"{}\"}}",
+        esc(&secret), esc(token), esc(ip)
+    );
+    let headers = Headers::new();
+    let _ = headers.set("content-type", "application/json");
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_headers(headers).with_body(Some(JsValue::from_str(&body)));
+    let req = match Request::new_with_init(
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+        &init,
+    ) {
+        Ok(r) => r,
+        Err(_) => return true,
+    };
+    match Fetch::Request(req).send().await {
+        Ok(mut resp) => resp.json::<TsVerify>().await.map(|v| v.success).unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
 fn too_many() -> Response {
     match Response::error("Too Many Requests", 429) {
         Ok(r) => r,
@@ -188,11 +229,12 @@ fn not_found() -> Response {
 // Sources allowed: own origin, Google Fonts (CSS + font files), and cdnjs for
 // highlight.js (script + theme). No inline scripts/styles → no 'unsafe-inline'.
 const CSP: &str = "default-src 'self'; \
-    script-src 'self'; \
+    script-src 'self' https://challenges.cloudflare.com; \
     style-src 'self'; \
     font-src 'self'; \
     img-src 'self' data: https:; \
-    connect-src 'self'; \
+    connect-src 'self' https://challenges.cloudflare.com; \
+    frame-src https://challenges.cloudflare.com; \
     base-uri 'none'; \
     form-action 'self'; \
     frame-ancestors 'none'; \
@@ -582,11 +624,19 @@ fn guestbook_page(entries: &[Entry]) -> String {
   <input class="gb-input" type="text" name="name" maxlength="50" placeholder="name (optional)" autocomplete="off">
   <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
   <textarea class="gb-input" name="message" maxlength="1000" rows="3" placeholder="message…" required></textarea>
+  <div class="cf-turnstile" data-sitekey="0x4AAAAAADnZY6GSHgHimDGH"></div>
   <button class="gb-btn" type="submit">sign</button>
 </form>
 {list}"#
     );
-    layout("guestbook", "guestbook", "Sign the guestbook — say hi.", "/guestbook", "", &inner)
+    layout(
+        "guestbook",
+        "guestbook",
+        "Sign the guestbook — say hi.",
+        "/guestbook",
+        "<script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\" async defer></script>",
+        &inner,
+    )
 }
 
 fn stats_page(rows: &[Hit]) -> String {
