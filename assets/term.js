@@ -288,7 +288,7 @@
     iv = setInterval(function () {
       if (!alive) return;
       tick++;
-      redo += (tick % 7 === 0) ? 3 : 2;
+      redo += (tick % 10 === 0) ? 2 : 1;
       if (redo >= pos) { redo = pos; place(); stop(false); return; }
       place();
       if (tick % 5 === 0) msgEl.textContent = taunts[tick % taunts.length];
