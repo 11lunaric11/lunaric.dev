@@ -30,3 +30,10 @@ CREATE TABLE IF NOT EXISTS requests (
   ua      TEXT,
   threat  TEXT
 );
+
+-- fixed-window rate limiter (per-IP keys)
+CREATE TABLE IF NOT EXISTS ratelimit (
+  k      TEXT PRIMARY KEY,
+  count  INTEGER NOT NULL,
+  window INTEGER NOT NULL
+);

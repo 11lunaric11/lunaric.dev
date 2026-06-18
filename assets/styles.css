@@ -243,6 +243,7 @@ table.req th {
 }
 table.req td { border-bottom: 1px solid var(--border-sm); padding: 7px 8px; color: var(--text); vertical-align: top; }
 table.req td.p { word-break: break-all; }
+table.req .ua { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
 table.req tr.sus td { background: rgba(224, 85, 110, 0.07); }
 .badge {
   font-family: var(--mono); font-size: 10px; color: #f0556e;

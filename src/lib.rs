@@ -28,6 +28,16 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .filter(|s| s.starts_with('/'))
         .unwrap_or_else(|| "/__dash-unset".to_string());
 
+    // auto-throttle scanners: if the path looks like an attack probe, rate-limit that IP
+    let threat = threat_tag(&path);
+    if threat.is_some() {
+        if let Some(db) = &log_db {
+            if !rl_allow(db, &format!("probe:{ip}"), 20, 60).await {
+                return Ok(secure(too_many()));
+            }
+        }
+    }
+
     let resp = Router::new()
         .get("/", |_, _| Response::from_html(home_page()))
         .get("/whoami", |_, _| Response::from_html(layout("whoami", "whoami", SITE_DESC, "/whoami", "", WHOAMI)))
@@ -52,6 +62,13 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             Response::from_html(guestbook_page(&entries))
         })
         .post_async("/guestbook", |mut req, ctx| async move {
+            // strict per-IP write limit (anti-spam flood)
+            let ip = req.headers().get("cf-connecting-ip").ok().flatten().unwrap_or_default();
+            if let Ok(db) = ctx.env.d1("DB") {
+                if !rl_allow(&db, &format!("gb:{ip}"), 5, 60).await {
+                    return Ok(too_many());
+                }
+            }
             let form = req.form_data().await?;
             // honeypot: real users never fill this hidden field; bots do.
             if !field(&form, "website").trim().is_empty() {
@@ -80,8 +97,7 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             Ok(r)
         })
         .get_async("/api/ping", |_, _| async move {
-            let body = r#"{"status":"ok","host":"lunaric.dev","runtime":"rust+wasm @ cloudflare edge"}"#;
-            let mut resp = Response::ok(body)?;
+            let mut resp = Response::ok(r#"{"status":"ok"}"#)?;
             resp.headers_mut().set("content-type", "application/json")?;
             Ok(resp)
         })
@@ -115,7 +131,6 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if let Some(db) = log_db {
         if should_log(&path, &dash) {
             let status = resp.status_code();
-            let threat = threat_tag(&path);
             ctx.wait_until(async move {
                 let _ = log_request(&db, &method, &path, status, &country, &ip, &ua, threat).await;
             });
@@ -131,6 +146,29 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
             .prepare("DELETE FROM requests WHERE id <= (SELECT MAX(id) FROM requests) - 5000")
             .run()
             .await;
+    }
+}
+
+// D1-backed fixed-window rate limiter. Returns true if allowed; fails open on error.
+async fn rl_allow(db: &D1Database, key: &str, limit: i64, period: i64) -> bool {
+    let sql = format!(
+        "INSERT INTO ratelimit (k, count, window) VALUES (?1, 1, CAST(strftime('%s','now') AS INTEGER)/{period}) \
+         ON CONFLICT(k) DO UPDATE SET \
+           count = CASE WHEN window = CAST(strftime('%s','now') AS INTEGER)/{period} THEN count + 1 ELSE 1 END, \
+           window = CAST(strftime('%s','now') AS INTEGER)/{period} \
+         RETURNING count"
+    );
+    let count: Option<i64> = match db.prepare(sql).bind(&[JsValue::from(key)]) {
+        Ok(stmt) => stmt.first(Some("count")).await.ok().flatten(),
+        Err(_) => return true,
+    };
+    count.map(|c| c <= limit).unwrap_or(true)
+}
+
+fn too_many() -> Response {
+    match Response::error("Too Many Requests", 429) {
+        Ok(r) => r,
+        Err(_) => Response::empty().unwrap().with_status(429),
     }
 }
 
@@ -587,7 +625,7 @@ fn dashboard_page(d: &Dash, email: &str) -> String {
     );
 
     let rows = if d.recent.is_empty() {
-        "<tr><td colspan=\"5\" class=\"out\">No requests logged yet.</td></tr>".to_string()
+        "<tr><td colspan=\"6\" class=\"out\">No requests logged yet.</td></tr>".to_string()
     } else {
         d.recent
             .iter()
@@ -598,15 +636,20 @@ fn dashboard_page(d: &Dash, email: &str) -> String {
                     .as_deref()
                     .map(|t| format!(" <span class=\"badge\">{}</span>", esc(t)))
                     .unwrap_or_default();
+                let ua = if r.ua.is_empty() {
+                    String::new()
+                } else {
+                    format!("<div class=\"ua\">{}</div>", esc(&r.ua))
+                };
                 format!(
-                    "<tr{cls}><td>{ts}</td><td>{m}</td><td>{st}</td><td>{cc}</td><td class=\"p\">{path}{badge}</td></tr>",
-                    ts = esc(&r.ts), m = esc(&r.method), st = r.status, cc = esc(&r.country), path = esc(&r.path),
+                    "<tr{cls}><td>{ts}</td><td>{m}</td><td>{st}</td><td>{cc}</td><td>{ip}</td><td class=\"p\">{path}{badge}{ua}</td></tr>",
+                    ts = esc(&r.ts), m = esc(&r.method), st = r.status, cc = esc(&r.country), ip = esc(&r.ip), path = esc(&r.path),
                 )
             })
             .collect::<String>()
     };
     let table = format!(
-        "<table class=\"req\"><thead><tr><th>time (UTC)</th><th>method</th><th>status</th><th>cc</th><th>path</th></tr></thead><tbody>{rows}</tbody></table>"
+        "<table class=\"req\"><thead><tr><th>time (UTC)</th><th>method</th><th>status</th><th>cc</th><th>ip</th><th>path</th></tr></thead><tbody>{rows}</tbody></table>"
     );
 
     let list = |title: &str, items: &[KC]| {

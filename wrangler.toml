@@ -26,6 +26,8 @@ binding = "DB"
 database_name = "lunaric-dev"
 database_id = "cf5f6ccb-ff1b-43c0-abc0-3f6c319c2bb3"
 
+# NOTE: rate limiting is implemented in D1 (see rl_allow in src/lib.rs) because the
+# native Workers rate-limit binding can't be cast by workers-rs yet (issue #700).
 # NOTE: a daily cron to prune the request log is available, but registering it
 # needs the "Workers Schedules" permission on the API token. Re-enable with:
 #   [triggers]
